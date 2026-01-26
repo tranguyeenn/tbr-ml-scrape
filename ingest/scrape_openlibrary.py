@@ -69,7 +69,7 @@ def scrape_and_store(query: str, limit: int = 25) -> None:
         print(f"   [{i+1}/{len(results)}] {book['title']}")
         sleep(0.15)  # be polite
 
-    print("✅ Open Library scraping complete.")
+    print("Open Library scraping complete.")
 
 
 if __name__ == "__main__":
