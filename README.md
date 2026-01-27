@@ -179,5 +179,8 @@ This project treats recommendation as a systems problem, not just a modeling one
 
 Built by Trang as a hands-on exploration of recommender systems, data pipelines, and ML-ready architecture.
 
+---
+## Timeline
+[tbr-ml-scraper timeline](https://docs.google.com/document/d/1hRuvsAeyEGn5gysZdtN_WOG81zwxc-dqr-mmkxYWpqY/edit?tab=t.0#heading=h.y3chlaurd2rz)
 
 
