@@ -1,11 +1,4 @@
-from pathlib import Path
-from ingest.load_csv import load_csv
-from preprocess.clean_books import clean_books
 import pandas as pd
-
-PATH = Path('data/raw/storyGraph_export.csv')
-df = load_csv(PATH)
-df = clean_books(df)
 
 def normalize_rating(df):
     min_rating = df["Star Rating"].min()
@@ -19,7 +12,11 @@ def normalize_rating(df):
             (max_rating - min_rating)
         )
 
+    return df
+
+def compute_recency(df):
     today = pd.Timestamp.today().normalize()
+
     df["days_since_read"] = (
         today - df["Last Date Read"]
     ).dt.days
@@ -37,5 +34,10 @@ def normalize_rating(df):
 
     return df
 
-df = normalize_rating(df)
-print(df.columns)
+def compute_score(df, rating_weight=0.7, recency_weight=0.3):
+    df["score"] = (
+        rating_weight * df["rating_norm"] +
+        recency_weight * df["recency_norm"]
+    )
+
+    return df
