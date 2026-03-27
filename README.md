@@ -11,7 +11,8 @@ It supports user-uploaded CSV files with arbitrary schemas, maps them into canon
 - Feature-aware preprocessing and normalization (works when some columns are missing)
 - Modular ranking for read and to-read lists
 - FastAPI backend plus a minimal Next.js frontend
-- Unit tests for flexible pipeline behavior
+- Frontend API proxy routes for stable backend connectivity
+- Unit tests for flexible pipeline and API endpoints
 
 ## Project Structure
 
@@ -30,9 +31,13 @@ libroRank/
 ├── cli/
 │   └── manage_books.py
 ├── test/
+│   ├── test_api.py
 │   └── test_flexible_pipeline.py
 ├── frontend/
 │   ├── app/
+│   │   ├── api/
+│   │   │   ├── books/route.ts
+│   │   │   └── recommend/route.ts
 │   │   ├── globals.css
 │   │   ├── layout.tsx
 │   │   └── page.tsx
@@ -86,6 +91,14 @@ uvicorn api:app --reload
 
 ## Frontend Setup (Next.js + TypeScript)
 
+Create `frontend/.env.local`:
+
+```bash
+API_BASE_URL=https://librorank.onrender.com
+```
+
+This is used by Next.js proxy routes (`/api/books`, `/api/recommend`) to call the backend.
+
 ```bash
 cd frontend
 npm install
@@ -93,6 +106,13 @@ npm run dev
 ```
 
 Open `http://localhost:3000`.
+
+## Frontend Features
+
+- Upload CSV and preview ranked output (`Top Ranked`)
+- Optional column mapping controls
+- Add book form (`POST /books` via frontend proxy)
+- Recommendation action (`GET /recommend` via frontend proxy)
 
 ## Run the Flexible Pipeline in Code
 
@@ -118,7 +138,7 @@ result = run_flexible_pipeline(
 Run unit tests:
 
 ```bash
-python3 -m unittest discover -s test -v
+./venv/bin/python -m unittest discover -s test -v
 ```
 
 ## License
