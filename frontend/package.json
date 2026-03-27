@@ -9,10 +9,10 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "next": "latest",
+    "next": "^16.2.1",
     "papaparse": "^5.4.1",
-    "react": "latest",
-    "react-dom": "latest"
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
   },
   "devDependencies": {
     "@types/node": "^20.17.24",
