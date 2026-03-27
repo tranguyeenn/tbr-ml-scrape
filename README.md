@@ -1,101 +1,102 @@
-# TBR Engine
+# LibroRank
 
-A modular book recommendation and management engine built in Python.
-This project ingests a StoryGraph export, performs data cleaning and feature engineering, and provides both ranked and random book recommendations from a user's TBR (To Be Read) list. It also supports persistent updates such as marking books as finished, DNF, or adding new entries.
+LibroRank is a modular book ranking system with a flexible CSV pipeline.  
+It supports user-uploaded CSV files with arbitrary schemas, maps them into canonical internal fields, runs preprocessing and scoring, and returns ranked reading recommendations.
 
-## Features
-- CSV ingestion and structured preprocessing
-- Flexible schema mapping for user-uploaded CSVs
-- Data cleaning and normalization
-- Recency-based scoring
-- Weighted ranking system
-- Author-preference recommendation logic
-- Exploration via controlled randomness
-- Deduplication and optional diversity filtering
-- CLI-based interaction
-- Persistent state management using CSV storage
+## Highlights
+
+- Flexible CSV ingestion with user-defined column mappings
+- Validation gate with clear `accept`, `accept_with_warnings`, or `reject` outcomes
+- Canonical feature pipeline: `book_id`, `title`, `author`, `genre`, `read_status`, `rating`, `last_date_read`
+- Feature-aware preprocessing and normalization (works when some columns are missing)
+- Modular ranking for read and to-read lists
+- FastAPI backend plus a minimal Next.js frontend
+- Unit tests for flexible pipeline behavior
 
 ## Project Structure
-``` txt
-tbr-engine/
-│
-├── data/
-│   ├── raw/
-│   │   └── storyGraph_export.csv
-│   └── processed/
-│       └── books.csv
-│
+
+```txt
+libroRank/
+├── api.py
 ├── ingest/
-│   └── load_csv.py
-│
+│   ├── load_csv.py
+│   ├── pipeline.py
+│   └── mapping.example.json
 ├── preprocess/
 │   ├── clean_books.py
 │   └── normalize.py
-│
 ├── ranking/
 │   └── score.py
-│
 ├── cli/
 │   └── manage_books.py
-│
-├── main.py
-└── README.md
+├── test/
+│   └── test_flexible_pipeline.py
+├── frontend/
+│   ├── app/
+│   │   ├── globals.css
+│   │   ├── layout.tsx
+│   │   └── page.tsx
+│   ├── package.json
+│   └── ...
+└── data/
+    ├── raw/
+    └── processed/
 ```
 
-## How It Works
-### 1. Ingestion
-Loads a StoryGraph CSV export from data/raw.
-Now also supports arbitrary CSV schemas through `ingest/mapping.example.json`.
+## Flexible Pipeline Flow
 
-### 2. Cleaning
-- Normalizes categorical fields
-- Handles missing ratings
-- Ensures date formatting
-- Preserves all reading statuses
+1. Load raw CSV
+2. Apply user mapping config (`column_mappings`)
+3. Validate required canonical fields
+4. Clean and coerce types
+5. Normalize available features
+6. Score and rank books
 
-### 3. Feature Engineering
-- Min-max normalization of ratings
-- Recency scoring based on days since read
+## Mapping Configuration
 
-### 4. Ranking Logic
-- Read books scored using weighted rating and recency
-- TBR books ranked using author preference learned from past ratings
-- Slight randomness added for exploration
-- Author diversity constraint
+Use `ingest/mapping.example.json` as the base template.
 
-### 5. CLI Interaction
-Users can:
-- Generate a smart recommendation
-- Mark a book as finished (auto sets today's date)
-- Mark a book as DNF
-- Add a new book to TBR
-- Persist changes to CSV
+Example:
 
-## Installation
-Clone the repository:
-``` bash
-git clone https://github.com/tranguyeenn/optimization-books-engine
+```json
+{
+  "column_mappings": {
+    "Book Name": "title",
+    "Writer": "author",
+    "Status": "read_status",
+    "My Rating": "rating",
+    "Finished On": "last_date_read"
+  }
+}
 ```
 
-Create and activate a virtual environment:
-``` bash
-python -m venv venv
+## Backend Setup (Python)
+
+```bash
+python3 -m venv venv
 source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Install dependencies:
-``` bash
-pip install pandas numpy
+Run API:
+
+```bash
+uvicorn api:app --reload
 ```
 
-## Usage
-Run the application:
-``` bash
-python main.py
+## Frontend Setup (Next.js + TypeScript)
+
+```bash
+cd frontend
+npm install
+npm run dev
 ```
 
-For flexible CSV pipeline usage in code:
-``` python
+Open `http://localhost:3000`.
+
+## Run the Flexible Pipeline in Code
+
+```python
 from ingest.pipeline import run_flexible_pipeline
 
 result = run_flexible_pipeline(
@@ -104,44 +105,22 @@ result = run_flexible_pipeline(
         "column_mappings": {
             "Book Name": "title",
             "Writer": "author",
-            "My Rating": "rating",
             "Status": "read_status",
+            "My Rating": "rating",
             "Finished On": "last_date_read"
         }
     }
 )
 ```
 
-You will be prompted with a menu:
-``` txt
-1 - Smart recommendation
-2 - Mark book as finished
-3 - Mark book as DNF
-4 - Add book to TBR
-5 - Exit
+## Tests
+
+Run unit tests:
+
+```bash
+python3 -m unittest discover -s test -v
 ```
-
-Changes are automatically saved to:
-``` txt
-data/processed/books.csv
-```
-
-## Design Principles
-- Separation of concerns
-- Modular architecture
-- Clean pipeline orchestration
-- Persistent state management
-
-## Future Improvements
-- Web-based UI (Streamlit or Flask)
-- REST API layer
-- Recommendation diversity controls
-- Collaborative filtering extensions
-- SQLite or database backend
-- Unit testing and CI integration
-
-## Author
-Trang Nguyen
 
 ## License
-MIT License
+
+MIT

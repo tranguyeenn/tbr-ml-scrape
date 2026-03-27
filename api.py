@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pathlib import Path
 import pandas as pd
@@ -9,6 +10,17 @@ from ranking.score import score_tbr_books, recommend_one
 
 
 app = FastAPI(title="LibroRank API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 BASE_DIR = Path(__file__).resolve().parent
 PROCESSED_PATH = BASE_DIR / "data" / "processed" / "books.csv"

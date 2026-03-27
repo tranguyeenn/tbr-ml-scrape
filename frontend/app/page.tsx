@@ -11,6 +11,12 @@ type RankedBook = {
   score: number;
 };
 
+type ApiBook = {
+  Title?: string;
+  Authors?: string;
+  score?: number;
+};
+
 type MappingState = {
   title: string;
   author: string;
@@ -85,6 +91,13 @@ export default function HomePage() {
   const [isDragActive, setIsDragActive] = useState<boolean>(false);
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
   const [mapping, setMapping] = useState<MappingState>(defaultMapping);
+  const [bookTitle, setBookTitle] = useState<string>("");
+  const [bookAuthor, setBookAuthor] = useState<string>("");
+  const [addMessage, setAddMessage] = useState<string>("");
+  const [recommendation, setRecommendation] = useState<ApiBook | null>(null);
+  const [apiMessage, setApiMessage] = useState<string>("");
+  const [loadingAdd, setLoadingAdd] = useState<boolean>(false);
+  const [loadingRecommend, setLoadingRecommend] = useState<boolean>(false);
 
   const ranked = useMemo(() => rankRows(rows, mapping, resultsLimit), [rows, mapping, resultsLimit]);
 
@@ -127,6 +140,63 @@ export default function HomePage() {
 
   const updateMapping = (key: keyof MappingState, value: string) => {
     setMapping((prev) => ({ ...prev, [key]: value }));
+  };
+
+  const addBook = async () => {
+    setAddMessage("");
+    if (!bookTitle.trim() || !bookAuthor.trim()) {
+      setAddMessage("Title and author are required.");
+      return;
+    }
+
+    setLoadingAdd(true);
+    try {
+      const response = await fetch("/api/books", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          title: bookTitle.trim(),
+          author: bookAuthor.trim()
+        })
+      });
+
+      if (!response.ok) {
+        setAddMessage(`Could not add book (${response.status}).`);
+        return;
+      }
+
+      setBookTitle("");
+      setBookAuthor("");
+      setAddMessage("Book added.");
+    } catch {
+      setAddMessage("Could not add book. Frontend proxy could not reach the API.");
+    } finally {
+      setLoadingAdd(false);
+    }
+  };
+
+  const getRecommendation = async () => {
+    setApiMessage("");
+    setLoadingRecommend(true);
+    try {
+      const response = await fetch("/api/recommend");
+      if (!response.ok) {
+        setApiMessage(`Could not fetch recommendation (${response.status}).`);
+        return;
+      }
+      const payload = (await response.json()) as ApiBook[];
+      const first = payload?.[0] ?? null;
+      setRecommendation(first);
+      if (!first) {
+        setApiMessage("No recommendation available.");
+      }
+    } catch {
+      setApiMessage("Could not fetch recommendation. Frontend proxy could not reach the API.");
+    } finally {
+      setLoadingRecommend(false);
+    }
   };
 
   return (
@@ -211,7 +281,62 @@ export default function HomePage() {
           ) : null}
         </div>
 
+        <div className="panel">
+          <div className="row">
+            <p className="small">Add book (API)</p>
+            <button className="button button-primary" disabled={loadingAdd} onClick={addBook}>
+              {loadingAdd ? "Adding..." : "Add Book"}
+            </button>
+          </div>
+          <div className="grid">
+            <label className="field">
+              <span className="label">Title</span>
+              <input
+                className="input"
+                value={bookTitle}
+                onChange={(event) => setBookTitle(event.target.value)}
+                placeholder="Book title"
+              />
+            </label>
+            <label className="field">
+              <span className="label">Author</span>
+              <input
+                className="input"
+                value={bookAuthor}
+                onChange={(event) => setBookAuthor(event.target.value)}
+                placeholder="Author"
+              />
+            </label>
+          </div>
+          {addMessage ? <p className="small">{addMessage}</p> : null}
+        </div>
+
+        <div className="panel">
+          <div className="row">
+            <p className="small">Recommend (API)</p>
+            <button className="button button-primary" disabled={loadingRecommend} onClick={getRecommendation}>
+              {loadingRecommend ? "Loading..." : "Get Recommendation"}
+            </button>
+          </div>
+          {recommendation ? (
+            <article className="item">
+              <span className="rank">#1</span>
+              <div>
+                <p className="book">{recommendation.Title ?? "Untitled"}</p>
+                <p className="meta">{recommendation.Authors ?? "Unknown author"}</p>
+              </div>
+              <span className="chip">
+                {(recommendation.score ?? 0).toFixed(2)}
+              </span>
+            </article>
+          ) : (
+            <p className="small">No recommendation loaded yet.</p>
+          )}
+          {apiMessage ? <p className="small">{apiMessage}</p> : null}
+        </div>
+
         <section className="results">
+          <p className="small">Top Ranked</p>
           {ranked.length === 0 ? (
             <div className="panel">
               <p className="small">No ranked results yet. Upload a CSV with read books and ratings.</p>
