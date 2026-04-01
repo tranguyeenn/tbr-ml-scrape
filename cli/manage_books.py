@@ -1,16 +1,6 @@
-from pathlib import Path
 import pandas as pd
 
-
-PROCESSED_PATH = Path("data/processed/books.csv")
-
-
-def load_data():
-    return pd.read_csv(PROCESSED_PATH)
-
-
-def save_data(df):
-    df.to_csv(PROCESSED_PATH, index=False)
+from book_data import load_data, save_data
 
 
 def mark_finished(title):

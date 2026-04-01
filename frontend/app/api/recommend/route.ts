@@ -1,13 +1,11 @@
 import { NextResponse } from "next/server";
 
-const API_BASE_URL =
-  process.env.API_BASE_URL ??
-  process.env.NEXT_PUBLIC_API_BASE_URL ??
-  "https://librorank.onrender.com";
+import { backendBaseUrl } from "../../../lib/backendUrl";
+import { upstreamUnreachableResponse } from "../../../lib/upstreamError";
 
 export async function GET() {
   try {
-    const upstream = await fetch(`${API_BASE_URL}/recommend`, {
+    const upstream = await fetch(`${backendBaseUrl()}/recommend`, {
       method: "GET",
       cache: "no-store"
     });
@@ -20,9 +18,6 @@ export async function GET() {
       headers: { "content-type": contentType }
     });
   } catch {
-    return NextResponse.json(
-      { detail: "Unable to reach LibroRank API from frontend server." },
-      { status: 502 }
-    );
+    return upstreamUnreachableResponse();
   }
 }

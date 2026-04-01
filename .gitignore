@@ -1,2 +1,7 @@
 frontend/node_modules/
 frontend/.next/
+frontend/.env.local
+
+# User library and raw exports — not committed (created locally or via pipeline tests)
+data/processed/books.csv
+data/raw/*.csv

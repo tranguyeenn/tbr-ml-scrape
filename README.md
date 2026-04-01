@@ -44,9 +44,11 @@ libroRank/
 │   ├── package.json
 │   └── ...
 └── data/
-    ├── raw/
-    └── processed/
+    ├── raw/          # optional: place your own CSV exports here (gitignored)
+    └── processed/    # books.csv is gitignored; created empty on first API/CLI use
 ```
+
+The API does not ship with a sample library. On first run it creates `data/processed/books.csv` with the correct headers and no rows. Use the ingest pipeline or the app to add books.
 
 ## Flexible Pipeline Flow
 
@@ -91,13 +93,14 @@ uvicorn api:app --reload
 
 ## Frontend Setup (Next.js + TypeScript)
 
-Create `frontend/.env.local`:
+Next.js proxy routes (`/api/books`, `/api/recommend`) call the backend URL from `frontend/lib/backendUrl.ts`. **Local development defaults to `http://127.0.0.1:8000`** so you use your own `data/processed/books.csv` (empty until you add books). Run `uvicorn` in another terminal.
+
+Only create `frontend/.env.local` when you need to override that, for example:
 
 ```bash
-API_BASE_URL=https://librorank.onrender.com
+# Point the UI at a deployed API (you will see that server’s library, not your local file)
+API_BASE_URL=https://your-api.example.com
 ```
-
-This is used by Next.js proxy routes (`/api/books`, `/api/recommend`) to call the backend.
 
 ```bash
 cd frontend
@@ -109,10 +112,12 @@ Open `http://localhost:3000`.
 
 ## Frontend Features
 
-- Upload CSV and preview ranked output (`Top Ranked`)
-- Optional column mapping controls
-- Add book form (`POST /books` via frontend proxy)
-- Recommendation action (`GET /recommend` via frontend proxy)
+- Shelves (Want to read, Currently reading, Read, DNF) from `GET /books`
+- Add book (`POST /books`), edit / move shelves (`PATCH /books`), remove (`DELETE /books?title=…`)
+- CSV import tab (`POST /books/import`) — maps Title / Authors / Total pages columns
+- Next-read suggestion (`GET /recommend` via proxy)
+
+Batch CSV ingestion for the canonical pipeline is also available in Python (`ingest/`).
 
 ## Run the Flexible Pipeline in Code
 

@@ -5,9 +5,6 @@ from typing import Any
 
 import pandas as pd
 
-
-PATH = Path("data/raw/storyGraph_export.csv")
-
 # Canonical internal fields used across preprocessing and ranking.
 CANONICAL_COLUMNS = [
     "book_id",

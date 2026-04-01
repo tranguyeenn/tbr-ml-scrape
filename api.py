@@ -1,10 +1,10 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from pathlib import Path
 import pandas as pd
 import numpy as np
 
+from book_data import load_data, save_data
 from preprocess.normalize import normalize_rating, compute_recency
 from ranking.score import score_tbr_books, recommend_one
 
@@ -21,20 +21,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-BASE_DIR = Path(__file__).resolve().parent
-PROCESSED_PATH = BASE_DIR / "data" / "processed" / "books.csv"
-
-
-def load_data():
-    df = pd.read_csv(PROCESSED_PATH)
-    df["Read Status"] = df["Read Status"].astype(str).str.strip().str.lower()
-    df["Last Date Read"] = pd.to_datetime(df["Last Date Read"], errors="coerce")
-    return df
-
-
-def save_data(df):
-    df.to_csv(PROCESSED_PATH, index=False)
 
 
 def clean_for_json(df):
@@ -71,6 +57,29 @@ class DNFBook(BaseModel):
     date: str | None = None
 
 
+class PatchBook(BaseModel):
+    """Update fields and/or move between shelves. `title` identifies the row."""
+
+    title: str
+    new_title: str | None = None
+    author: str | None = None
+    total_pages: int | None = None
+    pages_read: int | None = None
+    move_to: str | None = None  # want | reading | read | dnf
+    rating: float | None = None
+    date_read: str | None = None
+
+
+class ImportRow(BaseModel):
+    title: str
+    author: str | None = None
+    total_pages: int | None = None
+
+
+class ImportBooks(BaseModel):
+    books: list[ImportRow]
+
+
 @app.get("/books")
 def get_books():
     df = load_data()
@@ -98,6 +107,128 @@ def add_book(book: AddBook):
     save_data(df)
 
     return {"message": "Book added"}
+
+
+@app.delete("/books")
+def delete_book(title: str = Query(..., min_length=1)):
+    df = load_data()
+
+    if title not in df["Title"].values:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    df = df[df["Title"] != title].copy()
+    save_data(df)
+
+    return {"message": "Book deleted"}
+
+
+@app.patch("/books")
+def patch_book(p: PatchBook):
+    df = load_data()
+
+    if p.title not in df["Title"].values:
+        raise HTTPException(status_code=404, detail="Book not found")
+
+    if p.new_title is not None and p.new_title != p.title:
+        if p.new_title in df["Title"].values:
+            raise HTTPException(status_code=400, detail="A book with that title already exists")
+        df.loc[df["Title"] == p.title, "Title"] = p.new_title
+
+    key = p.new_title if p.new_title else p.title
+    row = df["Title"] == key
+
+    if p.author is not None:
+        df.loc[row, "Authors"] = p.author
+    if p.total_pages is not None:
+        df.loc[row, "Total Pages"] = p.total_pages
+
+    if p.move_to is not None:
+        m = p.move_to.strip().lower()
+        if m == "want":
+            df.loc[row, "Read Status"] = "to-read"
+            df.loc[row, "Progress (%)"] = 0
+            df.loc[row, "Pages Read"] = 0
+        elif m == "reading":
+            tp = df.loc[row, "Total Pages"].values[0]
+            if pd.isna(tp) or not tp or float(tp) <= 0:
+                raise HTTPException(status_code=400, detail="Set total pages before moving to currently reading")
+            tp = int(float(tp))
+            pr = p.pages_read if p.pages_read is not None else 1
+            pr = max(1, min(int(pr), tp))
+            df.loc[row, "Read Status"] = "to-read"
+            df.loc[row, "Pages Read"] = pr
+            df.loc[row, "Progress (%)"] = round((pr / tp) * 100, 2)
+        elif m == "read":
+            rating = p.rating
+            if rating is None:
+                existing = df.loc[row, "Star Rating"].values[0]
+                rating = float(existing) if pd.notna(existing) else None
+            if rating is None or not (1 <= rating <= 5):
+                raise HTTPException(status_code=400, detail="Rating 1–5 required when marking as read")
+            df.loc[row, "Read Status"] = "read"
+            df.loc[row, "Star Rating"] = rating
+            df.loc[row, "Progress (%)"] = 100
+            tp = df.loc[row, "Total Pages"].values[0]
+            if pd.notna(tp) and float(tp) > 0:
+                df.loc[row, "Pages Read"] = int(float(tp))
+            df.loc[row, "Last Date Read"] = parse_date_or_today(p.date_read)
+        elif m == "dnf":
+            df.loc[row, "Read Status"] = "dnf"
+            df.loc[row, "Star Rating"] = 1
+            df.loc[row, "Progress (%)"] = 0
+            df.loc[row, "Pages Read"] = 0
+            df.loc[row, "Last Date Read"] = parse_date_or_today(p.date_read)
+        else:
+            raise HTTPException(status_code=400, detail="move_to must be want, reading, read, or dnf")
+    elif p.pages_read is not None:
+        tp = df.loc[row, "Total Pages"].values[0]
+        if pd.isna(tp) or not tp or float(tp) <= 0:
+            raise HTTPException(status_code=400, detail="Total pages not set")
+        tp = int(float(tp))
+        pr = min(int(p.pages_read), tp)
+        df.loc[row, "Pages Read"] = pr
+        df.loc[row, "Progress (%)"] = round((pr / tp) * 100, 2)
+        df.loc[row, "Read Status"] = "to-read"
+    elif p.rating is not None:
+        rs = str(df.loc[row, "Read Status"].iloc[0]).lower()
+        if rs != "read":
+            raise HTTPException(status_code=400, detail="Rating can only be updated on finished books")
+        if not (1 <= p.rating <= 5):
+            raise HTTPException(status_code=400, detail="Rating must be 1–5")
+        df.loc[row, "Star Rating"] = p.rating
+
+    save_data(df)
+    return {"message": "Book updated"}
+
+
+@app.post("/books/import")
+def import_books(data: ImportBooks):
+    df = load_data()
+    imported = 0
+    skipped = 0
+    for book in data.books:
+        if not book.title or not book.title.strip():
+            skipped += 1
+            continue
+        t = book.title.strip()
+        if t in df["Title"].values:
+            skipped += 1
+            continue
+        new_row = {
+            "Title": t,
+            "Authors": (book.author or "").strip() or "Unknown",
+            "ISBN/UID": str(pd.Timestamp.now().timestamp()) + f"_{imported}",
+            "Read Status": "to-read",
+            "Star Rating": np.nan,
+            "Last Date Read": None,
+            "Progress (%)": 0,
+            "Pages Read": 0,
+            "Total Pages": book.total_pages,
+        }
+        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+        imported += 1
+    save_data(df)
+    return {"imported": imported, "skipped": skipped}
 
 
 @app.patch("/books/progress")
@@ -176,6 +307,9 @@ def recommend():
 
     tbr_ranked = score_tbr_books(df)
     recommendation = recommend_one(tbr_ranked)
+
+    if recommendation is None or len(recommendation) == 0:
+        return []
 
     recommendation = clean_for_json(recommendation)
 

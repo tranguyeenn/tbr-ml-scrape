@@ -1,37 +1,26 @@
 "use client";
 
 import Papa from "papaparse";
-import { ChangeEvent, DragEvent, useMemo, useState } from "react";
-
-type RawRow = Record<string, unknown>;
-
-type RankedBook = {
-  title: string;
-  author: string;
-  score: number;
-};
+import { ChangeEvent, DragEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 type ApiBook = {
-  Title?: string;
-  Authors?: string;
+  Title?: string | null;
+  Authors?: string | null;
   score?: number;
 };
 
-type MappingState = {
-  title: string;
-  author: string;
-  rating: string;
-  readStatus: string;
-  date: string;
+type BackendBook = {
+  Title?: string | null;
+  Authors?: string | null;
+  "Read Status"?: string | null;
+  "Progress (%)"?: number | null;
+  "Star Rating"?: number | null;
+  "Total Pages"?: number | null;
+  "Pages Read"?: number | null;
 };
 
-const defaultMapping: MappingState = {
-  title: "Title",
-  author: "Authors",
-  rating: "Star Rating",
-  readStatus: "Read Status",
-  date: "Last Date Read"
-};
+type TabId = "library" | "import" | "discover";
+type ShelfKind = "want" | "reading" | "read" | "dnf";
 
 function toNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null;
@@ -39,107 +28,247 @@ function toNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function computeMinMax(values: number[]): { min: number; max: number } {
-  return {
-    min: Math.min(...values),
-    max: Math.max(...values)
-  };
+function progressPct(book: BackendBook): number {
+  const p = toNumber(book["Progress (%)"]);
+  return p === null ? 0 : Math.min(100, Math.max(0, p));
 }
 
-function normalize(value: number, min: number, max: number): number {
-  if (max === min) return 1;
-  return (value - min) / (max - min);
+function statusNorm(s: string | null | undefined): string {
+  return String(s ?? "")
+    .trim()
+    .toLowerCase();
 }
 
-function rankRows(rows: RawRow[], mapping: MappingState, limit: number): RankedBook[] {
-  const readRows = rows.filter((row) => {
-    const raw = row[mapping.readStatus];
-    return String(raw ?? "").trim().toLowerCase() === "read";
+function shelfLabel(book: BackendBook): ShelfKind {
+  const st = statusNorm(book["Read Status"]);
+  const prog = progressPct(book);
+  if (st === "dnf") return "dnf";
+  if (st === "read") return "read";
+  if (st === "to-read" && prog > 0) return "reading";
+  return "want";
+}
+
+async function patchBook(body: Record<string, unknown>): Promise<Response> {
+  return fetch("/api/books", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    cache: "no-store"
   });
-
-  const ratingValues = readRows
-    .map((row) => toNumber(row[mapping.rating]))
-    .filter((value): value is number => value !== null);
-
-  if (readRows.length === 0 || ratingValues.length === 0) {
-    return [];
-  }
-
-  const { min, max } = computeMinMax(ratingValues);
-
-  return readRows
-    .map((row) => {
-      const title = String(row[mapping.title] ?? "Untitled").trim() || "Untitled";
-      const author = String(row[mapping.author] ?? "Unknown author").trim() || "Unknown author";
-      const rating = toNumber(row[mapping.rating]) ?? (min + max) / 2;
-      return {
-        title,
-        author,
-        score: normalize(rating, min, max)
-      };
-    })
-    .sort((a, b) => b.score - a.score)
-    .slice(0, limit);
 }
 
 export default function HomePage() {
-  const [csvFileName, setCsvFileName] = useState<string>("");
-  const [rows, setRows] = useState<RawRow[]>([]);
-  const [headers, setHeaders] = useState<string[]>([]);
-  const [resultsLimit, setResultsLimit] = useState<number>(5);
-  const [error, setError] = useState<string>("");
-  const [isDragActive, setIsDragActive] = useState<boolean>(false);
-  const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
-  const [mapping, setMapping] = useState<MappingState>(defaultMapping);
+  const [tab, setTab] = useState<TabId>("library");
+
+  const [library, setLibrary] = useState<BackendBook[]>([]);
+  const [libraryLoading, setLibraryLoading] = useState<boolean>(true);
+  const [libraryError, setLibraryError] = useState<string>("");
+
   const [bookTitle, setBookTitle] = useState<string>("");
   const [bookAuthor, setBookAuthor] = useState<string>("");
+  const [bookPages, setBookPages] = useState<string>("");
   const [addMessage, setAddMessage] = useState<string>("");
   const [recommendation, setRecommendation] = useState<ApiBook | null>(null);
   const [apiMessage, setApiMessage] = useState<string>("");
   const [loadingAdd, setLoadingAdd] = useState<boolean>(false);
   const [loadingRecommend, setLoadingRecommend] = useState<boolean>(false);
+  const [deletingTitle, setDeletingTitle] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState<string | null>(null);
 
-  const ranked = useMemo(() => rankRows(rows, mapping, resultsLimit), [rows, mapping, resultsLimit]);
+  const [editBook, setEditBook] = useState<BackendBook | null>(null);
+  const [editForm, setEditForm] = useState({
+    newTitle: "",
+    author: "",
+    totalPages: "",
+    pagesRead: "",
+    shelf: "want" as ShelfKind,
+    rating: ""
+  });
+  const [editError, setEditError] = useState<string>("");
 
-  const parseFile = (file: File) => {
-    setError("");
-    Papa.parse<RawRow>(file, {
-      header: true,
-      skipEmptyLines: true,
-      complete: (result) => {
-        if (result.errors.length > 0) {
-          setError("CSV could not be parsed. Check format and headers.");
-          return;
+  const [csvRows, setCsvRows] = useState<Record<string, unknown>[]>([]);
+  const [csvName, setCsvName] = useState<string>("");
+  const [csvCols, setCsvCols] = useState({ title: "Title", author: "Authors", pages: "Total Pages" });
+  const [importMsg, setImportMsg] = useState<string>("");
+  const [importing, setImporting] = useState<boolean>(false);
+  const [csvDrag, setCsvDrag] = useState<boolean>(false);
+
+  const loadLibrary = useCallback(async () => {
+    setLibraryError("");
+    setLibraryLoading(true);
+    try {
+      const response = await fetch("/api/books", { cache: "no-store" });
+      if (!response.ok) {
+        let message =
+          response.status === 502
+            ? "Library service unavailable."
+            : `Couldn't load library (${response.status}).`;
+        if (response.status !== 502) {
+          try {
+            const errBody = (await response.json()) as { detail?: string };
+            if (typeof errBody?.detail === "string" && errBody.detail.trim()) {
+              message = errBody.detail;
+            }
+          } catch {
+            /* keep */
+          }
         }
-        const parsedRows = result.data.filter((item) => Object.keys(item).length > 0);
-        const first = parsedRows[0] ?? {};
-        const foundHeaders = Object.keys(first);
-        setRows(parsedRows);
-        setHeaders(foundHeaders);
-        setCsvFileName(file.name);
-      },
-      error: () => {
-        setError("Unable to read file.");
+        setLibraryError(message);
+        setLibrary([]);
+        return;
       }
+      const data = (await response.json()) as BackendBook[];
+      const list = Array.isArray(data) ? data : [];
+      setLibrary(list);
+      if (list.length === 0) {
+        setRecommendation(null);
+      }
+    } catch {
+      setLibraryError("Couldn't load library.");
+      setLibrary([]);
+    } finally {
+      setLibraryLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadLibrary();
+  }, [loadLibrary]);
+
+  const shelves = useMemo(() => {
+    const want: BackendBook[] = [];
+    const reading: BackendBook[] = [];
+    const read: BackendBook[] = [];
+    const dnf: BackendBook[] = [];
+    for (const b of library) {
+      const s = shelfLabel(b);
+      if (s === "want") want.push(b);
+      else if (s === "reading") reading.push(b);
+      else if (s === "read") read.push(b);
+      else dnf.push(b);
+    }
+    return { want, reading, read, dnf };
+  }, [library]);
+
+  const openEdit = (book: BackendBook) => {
+    const sk = shelfLabel(book);
+    setEditBook(book);
+    setEditError("");
+    setEditForm({
+      newTitle: String(book.Title ?? ""),
+      author: String(book.Authors ?? ""),
+      totalPages: toNumber(book["Total Pages"])?.toString() ?? "",
+      pagesRead: toNumber(book["Pages Read"])?.toString() ?? "",
+      shelf: sk,
+      rating: toNumber(book["Star Rating"])?.toString() ?? ""
     });
   };
 
-  const onInputChange = (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
-    parseFile(file);
+  const saveEdit = async () => {
+    if (!editBook) return;
+    const t = String(editBook.Title ?? "");
+    setEditError("");
+    const tp = editForm.totalPages.trim() ? parseInt(editForm.totalPages, 10) : null;
+    const pr = editForm.pagesRead.trim() ? parseInt(editForm.pagesRead, 10) : null;
+    const body: Record<string, unknown> = { title: t };
+    if (editForm.newTitle.trim() && editForm.newTitle.trim() !== t) {
+      body.new_title = editForm.newTitle.trim();
+    }
+    if (editForm.author.trim() !== String(editBook.Authors ?? "")) {
+      body.author = editForm.author.trim();
+    }
+    if (tp !== null && !Number.isNaN(tp) && tp > 0) {
+      body.total_pages = tp;
+    }
+    const initialShelf = shelfLabel(editBook);
+    if (editForm.shelf !== initialShelf) {
+      body.move_to =
+        editForm.shelf === "want"
+          ? "want"
+          : editForm.shelf === "reading"
+            ? "reading"
+            : editForm.shelf === "read"
+              ? "read"
+              : "dnf";
+      if (editForm.shelf === "read") {
+        const r = parseFloat(editForm.rating);
+        if (!Number.isFinite(r) || r < 1 || r > 5) {
+          setEditError("Rating must be between 1 and 5 for Read.");
+          return;
+        }
+        body.rating = r;
+      }
+      if (editForm.shelf === "reading") {
+        body.pages_read = pr !== null && !Number.isNaN(pr) && pr > 0 ? pr : 1;
+        const needTp = tp ?? toNumber(editBook["Total Pages"]);
+        if (!needTp || needTp <= 0) {
+          setEditError("Total pages is required for Currently reading.");
+          return;
+        }
+        if (body.total_pages === undefined) body.total_pages = needTp;
+      }
+    } else if (editForm.shelf === "reading" && pr !== null && !Number.isNaN(pr)) {
+      body.pages_read = pr;
+    }
+    if (editForm.shelf === "read" && initialShelf === "read") {
+      const r = parseFloat(editForm.rating);
+      if (Number.isFinite(r) && r >= 1 && r <= 5) {
+        const prev = toNumber(editBook["Star Rating"]);
+        if (prev !== r) {
+          body.rating = r;
+        }
+      }
+    }
+
+    setActionBusy(t);
+    try {
+      const res = await patchBook(body);
+      if (!res.ok) {
+        const tx = await res.text();
+        setEditError(tx.slice(0, 200));
+        return;
+      }
+      setEditBook(null);
+      await loadLibrary();
+    } catch {
+      setEditError("Save failed.");
+    } finally {
+      setActionBusy(null);
+    }
   };
 
-  const onDrop = (event: DragEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    setIsDragActive(false);
-    const file = event.dataTransfer.files?.[0];
-    if (!file) return;
-    parseFile(file);
-  };
-
-  const updateMapping = (key: keyof MappingState, value: string) => {
-    setMapping((prev) => ({ ...prev, [key]: value }));
+  const runMove = async (book: BackendBook, move_to: "want" | "reading" | "read" | "dnf") => {
+    const t = String(book.Title ?? "");
+    setActionBusy(t);
+    try {
+      const body: Record<string, unknown> = { title: t, move_to };
+      if (move_to === "read") {
+        const r = window.prompt("Rating 1–5 for finished book:");
+        if (r === null) return;
+        const rating = parseFloat(r);
+        if (!Number.isFinite(rating) || rating < 1 || rating > 5) return;
+        body.rating = rating;
+      }
+      if (move_to === "reading") {
+        let tp = toNumber(book["Total Pages"]);
+        if (!tp || tp <= 0) {
+          const v = window.prompt("Total number of pages (required):");
+          if (v === null) return;
+          tp = parseInt(v, 10);
+          if (!tp || tp < 1) return;
+          body.total_pages = tp;
+        }
+        body.pages_read = 1;
+      }
+      const res = await patchBook(body);
+      if (!res.ok) {
+        setLibraryError((await res.text()).slice(0, 120));
+        return;
+      }
+      await loadLibrary();
+    } finally {
+      setActionBusy(null);
+    }
   };
 
   const addBook = async () => {
@@ -149,31 +278,64 @@ export default function HomePage() {
       return;
     }
 
+    const pagesNum = bookPages.trim() ? Number(bookPages.trim()) : NaN;
+    const total_pages =
+      bookPages.trim() === "" || !Number.isFinite(pagesNum) || pagesNum <= 0 ? null : Math.round(pagesNum);
+
     setLoadingAdd(true);
     try {
+      const body: { title: string; author: string; total_pages?: number } = {
+        title: bookTitle.trim(),
+        author: bookAuthor.trim()
+      };
+      if (total_pages !== null) body.total_pages = total_pages;
+
       const response = await fetch("/api/books", {
         method: "POST",
         headers: {
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({
-          title: bookTitle.trim(),
-          author: bookAuthor.trim()
-        })
+        body: JSON.stringify(body)
       });
 
       if (!response.ok) {
-        setAddMessage(`Could not add book (${response.status}).`);
+        const errText = await response.text();
+        setAddMessage(`Could not add book (${response.status}). ${errText.slice(0, 120)}`);
         return;
       }
 
       setBookTitle("");
       setBookAuthor("");
-      setAddMessage("Book added.");
+      setBookPages("");
+      setAddMessage("Added to Want to Read.");
+      await loadLibrary();
     } catch {
-      setAddMessage("Could not add book. Frontend proxy could not reach the API.");
+      setAddMessage("Couldn't add book.");
     } finally {
       setLoadingAdd(false);
+    }
+  };
+
+  const deleteBook = async (title: string) => {
+    if (!title) return;
+    const confirmed = typeof window !== "undefined" ? window.confirm(`Remove “${title}” from your library?`) : true;
+    if (!confirmed) return;
+
+    setDeletingTitle(title);
+    try {
+      const response = await fetch(`/api/books?title=${encodeURIComponent(title)}`, {
+        method: "DELETE"
+      });
+      if (!response.ok) {
+        setLibraryError(`Delete failed (${response.status}).`);
+        return;
+      }
+      setRecommendation((prev) => (prev?.Title === title ? null : prev));
+      await loadLibrary();
+    } catch {
+      setLibraryError("Couldn't remove book.");
+    } finally {
+      setDeletingTitle(null);
     }
   };
 
@@ -183,178 +345,506 @@ export default function HomePage() {
     try {
       const response = await fetch("/api/recommend");
       if (!response.ok) {
-        setApiMessage(`Could not fetch recommendation (${response.status}).`);
+        setApiMessage(
+          response.status === 502 ? "Suggestion service unavailable." : `Couldn't load suggestion (${response.status}).`
+        );
         return;
       }
       const payload = (await response.json()) as ApiBook[];
       const first = payload?.[0] ?? null;
       setRecommendation(first);
       if (!first) {
-        setApiMessage("No recommendation available.");
+        setApiMessage("No to-read books to recommend from. Add books first.");
       }
     } catch {
-      setApiMessage("Could not fetch recommendation. Frontend proxy could not reach the API.");
+      setApiMessage("Couldn't load a suggestion.");
     } finally {
       setLoadingRecommend(false);
     }
   };
 
+  const parseCsvFile = (file: File) => {
+    setImportMsg("");
+    Papa.parse<Record<string, unknown>>(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (result) => {
+        if (result.errors.length) {
+          setImportMsg("Could not parse CSV.");
+          return;
+        }
+        const rows = result.data.filter((r) => Object.keys(r).length > 0);
+        setCsvRows(rows);
+        setCsvName(file.name);
+      },
+      error: () => setImportMsg("Could not read file.")
+    });
+  };
+
+  const onCsvInput = (e: ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (f) parseCsvFile(f);
+  };
+
+  const onCsvDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setCsvDrag(false);
+    const f = e.dataTransfer.files?.[0];
+    if (f) parseCsvFile(f);
+  };
+
+  const resolveCol = (row: Record<string, unknown>, key: string): unknown => {
+    if (key in row) return row[key];
+    const lower = Object.keys(row).find((k) => k.toLowerCase() === key.toLowerCase());
+    return lower ? row[lower] : undefined;
+  };
+
+  const doImport = async () => {
+    if (csvRows.length === 0) {
+      setImportMsg("Choose a CSV first.");
+      return;
+    }
+    const books: { title: string; author?: string; total_pages?: number }[] = [];
+    for (const row of csvRows) {
+      const rawT = resolveCol(row, csvCols.title);
+      const title = String(rawT ?? "").trim();
+      if (!title) continue;
+      const rawA = resolveCol(row, csvCols.author);
+      const rawP = resolveCol(row, csvCols.pages);
+      const author = rawA !== undefined ? String(rawA).trim() : undefined;
+      let total_pages: number | undefined;
+      if (rawP !== undefined && rawP !== null && String(rawP).trim() !== "") {
+        const n = parseInt(String(rawP), 10);
+        if (Number.isFinite(n) && n > 0) total_pages = n;
+      }
+      books.push({ title, author: author || undefined, total_pages });
+    }
+    if (books.length === 0) {
+      setImportMsg("No rows with a title. Check column names.");
+      return;
+    }
+    setImporting(true);
+    setImportMsg("");
+    try {
+      const res = await fetch("/api/books/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ books })
+      });
+      const j = (await res.json()) as { imported?: number; skipped?: number; detail?: string };
+      if (!res.ok) {
+        setImportMsg(j.detail ?? `Import failed (${res.status}).`);
+        return;
+      }
+      setImportMsg(`Imported ${j.imported ?? 0}, skipped ${j.skipped ?? 0} (duplicates or empty).`);
+      setCsvRows([]);
+      setCsvName("");
+      await loadLibrary();
+    } catch {
+      setImportMsg("Import failed.");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const renderShelf = (label: string, books: BackendBook[]) => {
+    if (books.length === 0) return null;
+    return (
+      <section className="shelf-block" key={label}>
+        <h3 className="shelf-heading">{label}</h3>
+        <ul className="shelf-list">
+          {books.map((book, index) => {
+            const title = String(book.Title ?? "Untitled");
+            const author = String(book.Authors ?? "Unknown author");
+            const prog = progressPct(book);
+            const sk = shelfLabel(book);
+            const rating = toNumber(book["Star Rating"]);
+            const busy = actionBusy === title;
+            return (
+              <li className="shelf-row" key={`${title}-${index}`}>
+                <div className="shelf-row-main">
+                  <p className="book">{title}</p>
+                  <p className="meta">{author}</p>
+                  {sk === "reading" ? <p className="small muted">{prog}% read</p> : null}
+                  {sk === "read" && rating !== null ? <p className="small muted">{rating.toFixed(1)} ★</p> : null}
+                </div>
+                <div className="shelf-actions">
+                  <button type="button" className="button button-small" disabled={busy} onClick={() => openEdit(book)}>
+                    Edit
+                  </button>
+                  {sk === "want" ? (
+                    <>
+                      <button
+                        type="button"
+                        className="button button-small"
+                        disabled={busy}
+                        onClick={() => void runMove(book, "reading")}
+                      >
+                        Start reading
+                      </button>
+                      <button
+                        type="button"
+                        className="button button-small"
+                        disabled={busy}
+                        onClick={() => void runMove(book, "dnf")}
+                      >
+                        Mark DNF
+                      </button>
+                    </>
+                  ) : null}
+                  {sk === "reading" ? (
+                    <>
+                      <button
+                        type="button"
+                        className="button button-small"
+                        disabled={busy}
+                        onClick={() => void runMove(book, "read")}
+                      >
+                        Finish
+                      </button>
+                      <button
+                        type="button"
+                        className="button button-small"
+                        disabled={busy}
+                        onClick={() => void runMove(book, "dnf")}
+                      >
+                        Mark DNF
+                      </button>
+                      <button
+                        type="button"
+                        className="button button-small"
+                        disabled={busy}
+                        onClick={() => void runMove(book, "want")}
+                      >
+                        Back to want
+                      </button>
+                    </>
+                  ) : null}
+                  {sk === "dnf" ? (
+                    <button
+                      type="button"
+                      className="button button-small"
+                      disabled={busy}
+                      onClick={() => void runMove(book, "want")}
+                    >
+                      Back to want
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="button button-danger button-small"
+                    disabled={deletingTitle === title || busy}
+                    onClick={() => void deleteBook(title)}
+                  >
+                    {deletingTitle === title ? "…" : "Remove"}
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+    );
+  };
+
   return (
-    <main className="page">
-      <section className="card">
-        <header className="header">
+    <div className="app-shell">
+      <header className="top-bar">
+        <div className="brand">
           <h1 className="title">LibroRank</h1>
-          <p className="subtitle">Upload a CSV and get a calm, focused ranked reading list.</p>
-        </header>
-
-        <div className="panel">
-          <div
-            className={`dropzone ${isDragActive ? "dropzone-active" : ""}`}
-            onDragOver={(event) => {
-              event.preventDefault();
-              setIsDragActive(true);
-            }}
-            onDragLeave={() => setIsDragActive(false)}
-            onDrop={onDrop}
-          >
-            <p>Drop CSV here</p>
-            <p className="small">or choose a file manually</p>
-            <label className="button">
-              Choose File
-              <input type="file" accept=".csv,text/csv" hidden onChange={onInputChange} />
-            </label>
-          </div>
-
-          <div className="row">
-            <span className="small">{csvFileName ? `Loaded: ${csvFileName}` : "No file selected yet"}</span>
-            <div className="row">
-              <span className="small muted">Top</span>
-              <select
-                className="select"
-                value={resultsLimit}
-                onChange={(event) => setResultsLimit(Number(event.target.value))}
-              >
-                <option value={5}>5</option>
-                <option value={10}>10</option>
-              </select>
-            </div>
-          </div>
-
-          {error ? <p className="small" style={{ color: "#ff9da5" }}>{error}</p> : null}
+          <p className="tagline">Your shelves and next read — powered by your API library.</p>
         </div>
+        <nav className="tabs" aria-label="Main">
+          <button
+            type="button"
+            className={`tab ${tab === "library" ? "tab-active" : ""}`}
+            onClick={() => setTab("library")}
+          >
+            My books
+          </button>
+          <button
+            type="button"
+            className={`tab ${tab === "import" ? "tab-active" : ""}`}
+            onClick={() => setTab("import")}
+          >
+            Import CSV
+          </button>
+          <button
+            type="button"
+            className={`tab ${tab === "discover" ? "tab-active" : ""}`}
+            onClick={() => setTab("discover")}
+          >
+            Next read
+          </button>
+        </nav>
+      </header>
 
-        <div className="panel advanced">
-          <div className="row">
-            <p className="small">Optional mapping</p>
-            <button className="button" onClick={() => setShowAdvanced((prev) => !prev)}>
-              {showAdvanced ? "Hide" : "Show"}
-            </button>
-          </div>
+      <main className="main-content">
+        {libraryError ? (
+          <p className="banner banner-warn" role="status">
+            {libraryError}
+          </p>
+        ) : null}
 
-          {showAdvanced ? (
-            <div className="grid">
-              {[
-                { key: "title", label: "Title column" },
-                { key: "author", label: "Author column" },
-                { key: "rating", label: "Rating column" },
-                { key: "readStatus", label: "Status column" },
-                { key: "date", label: "Date column" }
-              ].map((field) => (
-                <label key={field.key} className="field">
-                  <span className="label">{field.label}</span>
+        {tab === "library" ? (
+          <div className="tab-panel">
+            <section className="card-elevated add-card">
+              <h2 className="section-title">Add a book</h2>
+              <p className="small muted">New titles go to Want to Read.</p>
+              <div className="grid add-grid">
+                <label className="field">
+                  <span className="label">Title</span>
                   <input
                     className="input"
-                    value={mapping[field.key as keyof MappingState]}
-                    onChange={(event) =>
-                      updateMapping(field.key as keyof MappingState, event.target.value)
-                    }
-                    list={`headers-${field.key}`}
+                    value={bookTitle}
+                    onChange={(event) => setBookTitle(event.target.value)}
+                    placeholder="Title"
+                    autoComplete="off"
                   />
-                  <datalist id={`headers-${field.key}`}>
-                    {headers.map((header) => (
-                      <option key={header} value={header} />
-                    ))}
-                  </datalist>
                 </label>
-              ))}
-            </div>
-          ) : null}
-        </div>
-
-        <div className="panel">
-          <div className="row">
-            <p className="small">Add book (API)</p>
-            <button className="button button-primary" disabled={loadingAdd} onClick={addBook}>
-              {loadingAdd ? "Adding..." : "Add Book"}
-            </button>
-          </div>
-          <div className="grid">
-            <label className="field">
-              <span className="label">Title</span>
-              <input
-                className="input"
-                value={bookTitle}
-                onChange={(event) => setBookTitle(event.target.value)}
-                placeholder="Book title"
-              />
-            </label>
-            <label className="field">
-              <span className="label">Author</span>
-              <input
-                className="input"
-                value={bookAuthor}
-                onChange={(event) => setBookAuthor(event.target.value)}
-                placeholder="Author"
-              />
-            </label>
-          </div>
-          {addMessage ? <p className="small">{addMessage}</p> : null}
-        </div>
-
-        <div className="panel">
-          <div className="row">
-            <p className="small">Recommend (API)</p>
-            <button className="button button-primary" disabled={loadingRecommend} onClick={getRecommendation}>
-              {loadingRecommend ? "Loading..." : "Get Recommendation"}
-            </button>
-          </div>
-          {recommendation ? (
-            <article className="item">
-              <span className="rank">#1</span>
-              <div>
-                <p className="book">{recommendation.Title ?? "Untitled"}</p>
-                <p className="meta">{recommendation.Authors ?? "Unknown author"}</p>
+                <label className="field">
+                  <span className="label">Author</span>
+                  <input
+                    className="input"
+                    value={bookAuthor}
+                    onChange={(event) => setBookAuthor(event.target.value)}
+                    placeholder="Author"
+                    autoComplete="off"
+                  />
+                </label>
+                <label className="field">
+                  <span className="label">Total pages (optional)</span>
+                  <input
+                    className="input"
+                    inputMode="numeric"
+                    value={bookPages}
+                    onChange={(event) => setBookPages(event.target.value)}
+                    placeholder="e.g. 320"
+                  />
+                </label>
               </div>
-              <span className="chip">
-                {(recommendation.score ?? 0).toFixed(2)}
-              </span>
-            </article>
-          ) : (
-            <p className="small">No recommendation loaded yet.</p>
-          )}
-          {apiMessage ? <p className="small">{apiMessage}</p> : null}
-        </div>
+              <div className="row">
+                <button className="button button-primary" disabled={loadingAdd} onClick={() => void addBook()}>
+                  {loadingAdd ? "Adding…" : "Add to Want to Read"}
+                </button>
+                <button
+                  type="button"
+                  className="button"
+                  disabled={libraryLoading}
+                  onClick={() => void loadLibrary()}
+                >
+                  {libraryLoading ? "Refreshing…" : "Refresh"}
+                </button>
+              </div>
+              {addMessage ? <p className="small ok">{addMessage}</p> : null}
+            </section>
 
-        <section className="results">
-          <p className="small">Top Ranked</p>
-          {ranked.length === 0 ? (
-            <div className="panel">
-              <p className="small">No ranked results yet. Upload a CSV with read books and ratings.</p>
+            {libraryLoading ? (
+              <p className="small muted">Loading your library…</p>
+            ) : library.length === 0 ? (
+              <div className="empty-library" aria-live="polite">
+                <p className="empty-library-text">
+                  Your shelves are empty. Add a book above or use the Import CSV tab — books are stored by the API.
+                </p>
+              </div>
+            ) : (
+              <div className="shelves">
+                {renderShelf("Want to Read", shelves.want)}
+                {renderShelf("Currently reading", shelves.reading)}
+                {renderShelf("Read", shelves.read)}
+                {renderShelf("Did not finish", shelves.dnf)}
+              </div>
+            )}
+          </div>
+        ) : null}
+
+        {tab === "import" ? (
+          <div className="tab-panel">
+            <section className="card-elevated">
+              <h2 className="section-title">Import CSV</h2>
+              <p className="small muted">
+                Rows are sent to your API as Want to Read. Duplicate titles are skipped. Map columns to your file’s
+                headers.
+              </p>
+              <div
+                className={`dropzone ${csvDrag ? "dropzone-active" : ""}`}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setCsvDrag(true);
+                }}
+                onDragLeave={() => setCsvDrag(false)}
+                onDrop={onCsvDrop}
+              >
+                <p>Drop a CSV here</p>
+                <label className="button button-primary">
+                  Choose file
+                  <input type="file" accept=".csv,text/csv" hidden onChange={onCsvInput} />
+                </label>
+              </div>
+              <p className="small">{csvName ? `Loaded: ${csvName} (${csvRows.length} rows)` : "No file selected"}</p>
+              <div className="grid add-grid">
+                <label className="field">
+                  <span className="label">Title column</span>
+                  <input
+                    className="input"
+                    value={csvCols.title}
+                    onChange={(e) => setCsvCols((c) => ({ ...c, title: e.target.value }))}
+                  />
+                </label>
+                <label className="field">
+                  <span className="label">Author column</span>
+                  <input
+                    className="input"
+                    value={csvCols.author}
+                    onChange={(e) => setCsvCols((c) => ({ ...c, author: e.target.value }))}
+                  />
+                </label>
+                <label className="field">
+                  <span className="label">Total pages column (optional)</span>
+                  <input
+                    className="input"
+                    value={csvCols.pages}
+                    onChange={(e) => setCsvCols((c) => ({ ...c, pages: e.target.value }))}
+                  />
+                </label>
+              </div>
+              <button type="button" className="button button-primary" disabled={importing} onClick={() => void doImport()}>
+                {importing ? "Importing…" : "Import to library"}
+              </button>
+              {importMsg ? <p className="small muted">{importMsg}</p> : null}
+            </section>
+          </div>
+        ) : null}
+
+        {tab === "discover" ? (
+          <div className="tab-panel">
+            <section className="card-elevated">
+              <h2 className="section-title">What should I read next?</h2>
+              {!libraryLoading && library.length === 0 ? (
+                <p className="small muted">
+                  Add books under My books first — there is nothing to suggest yet.
+                </p>
+              ) : (
+                <p className="small muted">
+                  Picks one book from your to-read pile using the API (author affinity plus light randomness).
+                </p>
+              )}
+              <button
+                className="button button-primary"
+                disabled={loadingRecommend || (!libraryLoading && library.length === 0)}
+                onClick={() => void getRecommendation()}
+              >
+                {loadingRecommend ? "Choosing…" : "Suggest a book"}
+              </button>
+              {recommendation ? (
+                <article className="item recommend-card">
+                  <span className="rank">Pick</span>
+                  <div>
+                    <p className="book">{recommendation.Title ?? "Untitled"}</p>
+                    <p className="meta">{recommendation.Authors ?? "Unknown author"}</p>
+                  </div>
+                  <span className="chip">{(recommendation.score ?? 0).toFixed(2)}</span>
+                </article>
+              ) : (
+                <p className="small muted">Run a suggestion to see a title here.</p>
+              )}
+              {apiMessage ? <p className="small err">{apiMessage}</p> : null}
+            </section>
+          </div>
+        ) : null}
+      </main>
+
+      {editBook ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setEditBook(null)}>
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="edit-title" className="section-title">
+              Edit book
+            </h2>
+            <div className="grid add-grid">
+              <label className="field">
+                <span className="label">Title</span>
+                <input
+                  className="input"
+                  value={editForm.newTitle}
+                  onChange={(e) => setEditForm((f) => ({ ...f, newTitle: e.target.value }))}
+                />
+              </label>
+              <label className="field">
+                <span className="label">Author</span>
+                <input
+                  className="input"
+                  value={editForm.author}
+                  onChange={(e) => setEditForm((f) => ({ ...f, author: e.target.value }))}
+                />
+              </label>
+              <label className="field">
+                <span className="label">Total pages</span>
+                <input
+                  className="input"
+                  inputMode="numeric"
+                  value={editForm.totalPages}
+                  onChange={(e) => setEditForm((f) => ({ ...f, totalPages: e.target.value }))}
+                />
+              </label>
+              <label className="field">
+                <span className="label">Pages read</span>
+                <input
+                  className="input"
+                  inputMode="numeric"
+                  value={editForm.pagesRead}
+                  onChange={(e) => setEditForm((f) => ({ ...f, pagesRead: e.target.value }))}
+                />
+              </label>
+              <label className="field">
+                <span className="label">Shelf</span>
+                <select
+                  className="select"
+                  value={editForm.shelf}
+                  onChange={(e) =>
+                    setEditForm((f) => ({ ...f, shelf: e.target.value as ShelfKind }))
+                  }
+                >
+                  <option value="want">Want to read</option>
+                  <option value="reading">Currently reading</option>
+                  <option value="read">Read</option>
+                  <option value="dnf">Did not finish</option>
+                </select>
+              </label>
+              {editForm.shelf === "read" ? (
+                <label className="field">
+                  <span className="label">Rating (1–5)</span>
+                  <input
+                    className="input"
+                    inputMode="decimal"
+                    value={editForm.rating}
+                    onChange={(e) => setEditForm((f) => ({ ...f, rating: e.target.value }))}
+                  />
+                </label>
+              ) : null}
             </div>
-          ) : (
-            ranked.map((item, index) => (
-              <article key={`${item.title}-${item.author}-${index}`} className="item">
-                <span className="rank">#{index + 1}</span>
-                <div>
-                  <p className="book">{item.title}</p>
-                  <p className="meta">{item.author}</p>
-                </div>
-                <span className="chip">{item.score.toFixed(2)}</span>
-              </article>
-            ))
-          )}
-        </section>
-      </section>
-    </main>
+            {editError ? <p className="small err">{editError}</p> : null}
+            <div className="row">
+              <button type="button" className="button" onClick={() => setEditBook(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button button-primary"
+                disabled={actionBusy !== null}
+                onClick={() => void saveEdit()}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </div>
   );
 }
