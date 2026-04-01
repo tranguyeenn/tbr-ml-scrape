@@ -323,8 +323,12 @@ export default function HomePage() {
 
     setDeletingTitle(title);
     try {
-      const response = await fetch(`/api/books?title=${encodeURIComponent(title)}`, {
-        method: "DELETE"
+      const response = await fetch("/api/books/remove", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ title })
       });
       if (!response.ok) {
         setLibraryError(`Delete failed (${response.status}).`);

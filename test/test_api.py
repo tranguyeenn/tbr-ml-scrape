@@ -160,6 +160,32 @@ class ApiTests(unittest.TestCase):
 
     @patch("api.save_data")
     @patch("api.load_data")
+    def test_remove_via_post(self, mock_load_data, mock_save_data):
+        base_df = pd.DataFrame(
+            [
+                {
+                    "Title": "Gone",
+                    "Authors": "A",
+                    "ISBN/UID": "1",
+                    "Read Status": "to-read",
+                    "Star Rating": np.nan,
+                    "Last Date Read": None,
+                    "Progress (%)": 0,
+                    "Pages Read": 0,
+                    "Total Pages": None,
+                }
+            ]
+        )
+        mock_load_data.return_value = base_df
+
+        response = self.client.post("/books/remove", json={"title": "Gone"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {"message": "Book deleted"})
+        saved_df = mock_save_data.call_args.args[0]
+        self.assertEqual(len(saved_df), 0)
+
+    @patch("api.save_data")
+    @patch("api.load_data")
     def test_patch_move_to_dnf(self, mock_load_data, mock_save_data):
         base_df = pd.DataFrame(
             [

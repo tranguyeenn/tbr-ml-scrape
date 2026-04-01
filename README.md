@@ -113,7 +113,7 @@ Open `http://localhost:3000`.
 ## Frontend Features
 
 - Shelves (Want to read, Currently reading, Read, DNF) from `GET /books`
-- Add book (`POST /books`), edit / move shelves (`PATCH /books`), remove (`DELETE /books?title=…`)
+- Add book (`POST /books`), edit / move shelves (`PATCH /books`), remove (`POST /books/remove` with `{ "title" }` — `DELETE /books` still exists; the UI uses POST to avoid **405** from some hosts that block `DELETE`)
 - CSV import tab (`POST /books/import`) — maps Title / Authors / Total pages columns
 - Next-read suggestion (`GET /recommend` via proxy)
 

@@ -80,6 +80,19 @@ class ImportBooks(BaseModel):
     books: list[ImportRow]
 
 
+class RemoveBook(BaseModel):
+    title: str
+
+
+def _delete_book_by_title(title: str) -> dict:
+    df = load_data()
+    if title not in df["Title"].values:
+        raise HTTPException(status_code=404, detail="Book not found")
+    df = df[df["Title"] != title].copy()
+    save_data(df)
+    return {"message": "Book deleted"}
+
+
 @app.get("/books")
 def get_books():
     df = load_data()
@@ -111,15 +124,16 @@ def add_book(book: AddBook):
 
 @app.delete("/books")
 def delete_book(title: str = Query(..., min_length=1)):
-    df = load_data()
+    return _delete_book_by_title(title)
 
-    if title not in df["Title"].values:
-        raise HTTPException(status_code=404, detail="Book not found")
 
-    df = df[df["Title"] != title].copy()
-    save_data(df)
-
-    return {"message": "Book deleted"}
+@app.post("/books/remove")
+def remove_book(body: RemoveBook):
+    """Same as DELETE /books — POST avoids 405 from proxies that block DELETE."""
+    t = body.title.strip()
+    if not t:
+        raise HTTPException(status_code=400, detail="title is required")
+    return _delete_book_by_title(t)
 
 
 @app.patch("/books")
