@@ -118,7 +118,7 @@ def _delete_book_by_title(title: str) -> dict:
 
 # --- ROUTES ---
 
-@app.get("/health")
+@app.get("/health", methods=["GET", "HEAD"])
 async def health():
     return {"status": "healthy", "service": "LibroRank"}
 
